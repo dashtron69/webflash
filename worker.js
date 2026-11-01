@@ -73,7 +73,7 @@ export default {
         const s = await stripe(env, "/checkout/sessions", "POST", {
           mode: "payment",
           "line_items[0][price_data][currency]": "thb",
-          "line_items[0][price_data][unit_amount]": "3900", // satang
+          "line_items[0][price_data][unit_amount]": "19900", // satang
           "line_items[0][price_data][product_data][name]": "สนับสนุนค่าน้ำชา - Flash Tool",
           "line_items[0][quantity]": "1",
           "payment_method_types[0]": "card",
