@@ -17,30 +17,29 @@ const PROJECTS = {
     manifest: "firmware-installer/manifest.json",
     prefix: "firmware-installer/",
   },
-  // TODO: แก้ manifest/prefix ให้ตรงกับโครงสร้างใน repo แล้วเปลี่ยน enabled เป็น true เมื่อพร้อม
-  motogauge: {
-    name: "เกจมอเตอร์ไซค์",
-    enabled: false,
-    manifest: "projects/motogauge/manifest.json",
-    prefix: "projects/motogauge/",
-  },
-  bitkubbot: {
-    name: "Bitkub Bot",
-    enabled: false,
-    manifest: "projects/bitkubbot/manifest.json",
-    prefix: "projects/bitkubbot/",
+  setthai: {
+    name: "ราคาหุ้นไทย ทองคำ และคริปโต",
+    enabled: true,
+    manifest: "firmware-test/manifest.json",
+    prefix: "firmware-test/",
   },
   medreminder: {
     name: "ระบบเตือนทานยา",
-    enabled: false,
-    manifest: "projects/medreminder/manifest.json",
-    prefix: "projects/medreminder/",
+    enabled: true,
+    manifest: "firmware-medreminder/manifest.json",
+    prefix: "firmware-medreminder/",
   },
-  setthai: {
-    name: "ราคาหุ้นไทย ทองคำ และคริปโต",
-    enabled: false,
-    manifest: "projects/setthai/manifest.json",
-    prefix: "projects/setthai/",
+  bitkubbot: {
+    name: "Bitkub Bot",
+    enabled: true,
+    manifest: "firmware-bitkubbot/manifest.json",
+    prefix: "firmware-bitkubbot/",
+  },
+  motogauge: {
+    name: "เกจมอเตอร์ไซค์",
+    enabled: true,
+    manifest: "firmware-motogauge/manifest.json",
+    prefix: "firmware-motogauge/",
   },
 };
 
