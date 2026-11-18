@@ -1,8 +1,48 @@
 // Cloudflare Worker: Stripe checkout + payment verification + firmware proxy
 // Secrets (wrangler secret put): STRIPE_SECRET_KEY, GITHUB_TOKEN (only if firmware repo is private)
-// Vars (wrangler.toml): SITE_URL, FIRMWARE_OWNER, FIRMWARE_REPO, FIRMWARE_BRANCH
+// Vars (wrangler.toml): SITE_URL, SITE_PATH, FIRMWARE_OWNER, FIRMWARE_REPO, FIRMWARE_BRANCH
 
 const BOARDS = ["ILI9341", "ST7789"];
+const PRICE_SATANG = "19900"; // 199 บาท (ทุกโปรแกรมราคาเดียวกัน)
+
+// รายชื่อโปรแกรมที่เฟลชได้
+//   enabled  : true = เปิดให้ซื้อ/เฟลช   false = ยังไม่พร้อม (เร็วๆ นี้)
+//   manifest : ไฟล์ manifest.json ของโปรแกรมนั้นใน repo เฟิร์มแวร์
+//   prefix   : โฟลเดอร์ของโปรแกรมนั้น (ใช้กันไม่ให้โหลดไฟล์ของโปรแกรมอื่น)
+// ภายใน manifest path ของแต่ละไฟล์ต้องมี "/<ILI9341|ST7789>/" อยู่ เหมือนเดิม
+const PROJECTS = {
+  dashtron: {
+    name: "DashTron",
+    enabled: true,
+    manifest: "firmware-installer/manifest.json",
+    prefix: "firmware-installer/",
+  },
+  // TODO: แก้ manifest/prefix ให้ตรงกับโครงสร้างใน repo แล้วเปลี่ยน enabled เป็น true เมื่อพร้อม
+  motogauge: {
+    name: "เกจมอเตอร์ไซค์",
+    enabled: false,
+    manifest: "projects/motogauge/manifest.json",
+    prefix: "projects/motogauge/",
+  },
+  bitkubbot: {
+    name: "Bitkub Bot",
+    enabled: false,
+    manifest: "projects/bitkubbot/manifest.json",
+    prefix: "projects/bitkubbot/",
+  },
+  medreminder: {
+    name: "ระบบเตือนทานยา",
+    enabled: false,
+    manifest: "projects/medreminder/manifest.json",
+    prefix: "projects/medreminder/",
+  },
+  setthai: {
+    name: "ราคาหุ้นไทย ทองคำ และคริปโต",
+    enabled: false,
+    manifest: "projects/setthai/manifest.json",
+    prefix: "projects/setthai/",
+  },
+};
 
 function cors(env) {
   return {
@@ -46,10 +86,17 @@ async function fetchFirmware(env, path) {
   return fetch(`https://raw.githubusercontent.com/${o}/${r}/${b}/${path}`);
 }
 
-async function assertPaid(env, sessionId) {
-  if (!/^cs_(test|live)_[A-Za-z0-9]+$/.test(sessionId || "")) return false;
+// คืนค่า { project, board } ที่ล็อกไว้ตอนชำระเงิน ถ้าจ่ายแล้วจริง ไม่งั้นคืน null
+// โปรแกรม/ชิปจอ มาจาก metadata ของ Stripe session เสมอ (ไม่เชื่อค่าที่เบราว์เซอร์ส่งมาทีหลัง)
+// จึงเปลี่ยนไม่ได้หลังชำระเงิน
+async function getPaidSelection(env, sessionId) {
+  if (!/^cs_(test|live)_[A-Za-z0-9]+$/.test(sessionId || "")) return null;
   const s = await stripe(env, "/checkout/sessions/" + sessionId);
-  return s && s.payment_status === "paid";
+  if (!s || s.payment_status !== "paid") return null;
+  const project = s.metadata?.project;
+  const board = s.metadata?.board;
+  if (!PROJECTS[project] || !BOARDS.includes(board)) return null;
+  return { project, board };
 }
 
 // Collect every object that has an address + path (robust to manifest layout)
@@ -68,16 +115,22 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: cors(env) });
 
     try {
-      // 1) Create Checkout Session (39 THB)
+      // 1) Create Checkout Session (199 THB) — ล็อกโปรแกรม + ชิปจอ ไว้ใน metadata
       if (url.pathname === "/checkout" && request.method === "POST") {
+        const { project, board } = await request.json().catch(() => ({}));
+        if (!PROJECTS[project] || !PROJECTS[project].enabled) return json(env, { error: "โปรแกรมนี้ยังไม่เปิดให้ติดตั้ง" }, 400);
+        if (!BOARDS.includes(board)) return json(env, { error: "bad board" }, 400);
+
         const s = await stripe(env, "/checkout/sessions", "POST", {
           mode: "payment",
           "line_items[0][price_data][currency]": "thb",
-          "line_items[0][price_data][unit_amount]": "19900", // satang
-          "line_items[0][price_data][product_data][name]": "ชำระค่าบริการ - Flash Tool",
+          "line_items[0][price_data][unit_amount]": PRICE_SATANG,
+          "line_items[0][price_data][product_data][name]": `Flash Tool - ${PROJECTS[project].name} (${board})`,
           "line_items[0][quantity]": "1",
           "payment_method_types[0]": "card",
           "payment_method_types[1]": "promptpay",
+          "metadata[project]": project,
+          "metadata[board]": board,
           success_url: env.SITE_URL + (env.SITE_PATH || "/") + "?session_id={CHECKOUT_SESSION_ID}",
           cancel_url: env.SITE_URL + (env.SITE_PATH || "/"),
         });
@@ -85,32 +138,40 @@ export default {
         return json(env, { url: s.url });
       }
 
-      // 2) Verify payment + return list of parts for the chosen board
-      if (url.pathname === "/parts") {
-        const sid = url.searchParams.get("session_id");
-        const board = url.searchParams.get("board");
-        if (!BOARDS.includes(board)) return json(env, { error: "bad board" }, 400);
-        if (!(await assertPaid(env, sid))) return json(env, { error: "not paid" }, 402);
+      // 2) Verify payment + return what was purchased (ใช้ตอนกลับจากหน้าชำระเงิน)
+      if (url.pathname === "/session") {
+        const sel = await getPaidSelection(env, url.searchParams.get("session_id"));
+        if (!sel) return json(env, { error: "not paid" }, 402);
+        return json(env, sel);
+      }
 
-        const mf = await fetchFirmware(env, "firmware-installer/manifest.json");
+      // 3) Return list of parts for the purchased project + board
+      if (url.pathname === "/parts") {
+        const sel = await getPaidSelection(env, url.searchParams.get("session_id"));
+        if (!sel) return json(env, { error: "not paid" }, 402);
+        const proj = PROJECTS[sel.project];
+
+        const mf = await fetchFirmware(env, proj.manifest);
         if (!mf.ok) return json(env, { error: "manifest not found" }, 502);
         const parts = collectParts(await mf.json())
-          .filter((p) => p.path.includes(`/${board}/`))
+          .filter((p) => p.path.startsWith(proj.prefix) && p.path.includes(`/${sel.board}/`))
           .map((p) => ({ name: p.name, address: p.address, path: p.path, size: p.size, sha256: p.sha256 }));
         if (!parts.length) return json(env, { error: "no parts for board" }, 404);
         return json(env, { parts });
       }
 
-      // 3) Stream firmware file (only if paid)
+      // 4) Stream firmware file (only the purchased project + board)
       if (url.pathname === "/firmware") {
-        const sid = url.searchParams.get("session_id");
+        const sel = await getPaidSelection(env, url.searchParams.get("session_id"));
+        if (!sel) return json(env, { error: "not paid" }, 402);
+        const proj = PROJECTS[sel.project];
+
         const path = url.searchParams.get("path") || "";
         const ok =
-          path.startsWith("firmware-installer/") &&
+          path.startsWith(proj.prefix) &&
           !path.includes("..") &&
-          BOARDS.some((b) => path.includes(`/${b}/`));
+          path.includes(`/${sel.board}/`);
         if (!ok) return json(env, { error: "bad path" }, 400);
-        if (!(await assertPaid(env, sid))) return json(env, { error: "not paid" }, 402);
 
         const f = await fetchFirmware(env, path);
         if (!f.ok) return json(env, { error: "file not found" }, 502);
