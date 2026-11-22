@@ -108,6 +108,21 @@ function collectParts(node, out = []) {
   return out;
 }
 
+// ดึงรายการไฟล์เฟิร์มแวร์ของโปรเจ็ค + ชิปจอ จาก manifest ใน repo
+// คืนค่า { parts } หรือ { error, status }
+async function loadParts(env, project, board) {
+  const proj = PROJECTS[project];
+  const mf = await fetchFirmware(env, proj.manifest);
+  if (!mf.ok) return { error: "manifest not found", status: 502 };
+  let data;
+  try { data = await mf.json(); } catch { return { error: "manifest invalid", status: 502 }; }
+  const parts = collectParts(data)
+    .filter((p) => p.path.startsWith(proj.prefix) && p.path.includes(`/${board}/`))
+    .map((p) => ({ name: p.name, address: p.address, path: p.path, size: p.size, sha256: p.sha256 }));
+  if (!parts.length) return { error: "no parts for board", status: 404 };
+  return { parts };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -119,6 +134,12 @@ export default {
         const { project, board } = await request.json().catch(() => ({}));
         if (!PROJECTS[project] || !PROJECTS[project].enabled) return json(env, { error: "โปรแกรมนี้ยังไม่เปิดให้ติดตั้ง" }, 400);
         if (!BOARDS.includes(board)) return json(env, { error: "bad board" }, 400);
+
+        // กันเก็บเงินโดยไม่มีของส่ง: ต้องมีไฟล์เฟิร์มแวร์ของโปรแกรม+ชิปจอนี้พร้อมก่อน
+        const ready = await loadParts(env, project, board);
+        if (!ready.parts) {
+          return json(env, { error: "ขณะนี้ยังไม่มีไฟล์เฟิร์มแวร์ของโปรแกรมนี้สำหรับชิปจอที่เลือก จึงยังไม่เปิดให้ชำระเงิน (ไม่มีการเรียกเก็บเงิน)" }, 503);
+        }
 
         const s = await stripe(env, "/checkout/sessions", "POST", {
           mode: "payment",
@@ -148,15 +169,9 @@ export default {
       if (url.pathname === "/parts") {
         const sel = await getPaidSelection(env, url.searchParams.get("session_id"));
         if (!sel) return json(env, { error: "not paid" }, 402);
-        const proj = PROJECTS[sel.project];
-
-        const mf = await fetchFirmware(env, proj.manifest);
-        if (!mf.ok) return json(env, { error: "manifest not found" }, 502);
-        const parts = collectParts(await mf.json())
-          .filter((p) => p.path.startsWith(proj.prefix) && p.path.includes(`/${sel.board}/`))
-          .map((p) => ({ name: p.name, address: p.address, path: p.path, size: p.size, sha256: p.sha256 }));
-        if (!parts.length) return json(env, { error: "no parts for board" }, 404);
-        return json(env, { parts });
+        const r = await loadParts(env, sel.project, sel.board);
+        if (!r.parts) return json(env, { error: r.error }, r.status);
+        return json(env, { parts: r.parts });
       }
 
       // 4) Stream firmware file (only the purchased project + board)
