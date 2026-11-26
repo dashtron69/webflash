@@ -260,10 +260,9 @@
       <select id="project">
         <option value="">— เลือกโปรแกรม —</option>
         <option value="dashtron">DashTron</option>
-        <!-- เมื่อโปรเจ็คไหนพร้อมใช้งาน ให้ลบคำว่า disabled ออก และแก้ enabled ใน worker.js ด้วย -->
-        <option value="gulftide">ตารางน้ำขึ้น/น้ำลง</option>
-        <option value="medreminder">ระบบเตือนทานยา</option>
         <option value="setthai">ราคาหุ้นไทย ทองคำ และคริปโต</option>
+        <option value="medreminder">ระบบเตือนทานยา</option>
+        <option value="gulftide">ตารางน้ำขึ้น/น้ำลง</option>
       </select>
     </section>
   </fieldset>
@@ -322,9 +321,9 @@ if (!hasSerial) $("noSerial").style.display = "block";
 
 const PROJECT_NAMES = {
   dashtron: "DashTron",
-  gulftide: "ตารางน้ำขึ้น/น้ำลง",
-  medreminder: "ระบบเตือนทานยา",
   setthai: "ราคาหุ้นไทย ทองคำ และคริปโต",
+  medreminder: "ระบบเตือนทานยา",
+  gulftide: "ตารางน้ำขึ้น/น้ำลง",
 };
 
 let port = null;      // SerialPort ที่ผู้ใช้อนุญาตแล้ว (ยังไม่ได้เปิด)
