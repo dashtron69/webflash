@@ -5,43 +5,38 @@
 const BOARDS = ["ILI9341", "ST7789"];
 const PRICE_SATANG = "19900"; // 199 บาท (ทุกโปรแกรมราคาเดียวกัน)
 
-// รายชื่อโปรแกรมที่เฟลชได้
-//   enabled  : true = เปิดให้ซื้อ/เฟลช   false = ยังไม่พร้อม (เร็วๆ นี้)
-//   manifest : ไฟล์ manifest.json ของโปรแกรมนั้นใน repo เฟิร์มแวร์
-//   prefix   : โฟลเดอร์ของโปรแกรมนั้น (ใช้กันไม่ให้โหลดไฟล์ของโปรแกรมอื่น)
-// ภายใน manifest path ของแต่ละไฟล์ต้องมี "/<ILI9341|ST7789>/" อยู่ เหมือนเดิม
-const PROJECTS = {
-  dashtron: {
-    name: "DashTron",
-    enabled: true,
-    manifest: "firmware-installer/manifest.json",
-    prefix: "firmware-installer/",
-  },
-  setthai: {
-    name: "ราคาหุ้นไทย ทองคำ และคริปโต",
-    enabled: true,
-    manifest: "firmware-test/manifest.json",
-    prefix: "firmware-test/",
-  },
-  medreminder: {
-    name: "ระบบเตือนทานยา",
-    enabled: true,
-    manifest: "firmware-medreminder/manifest.json",
-    prefix: "firmware-medreminder/",
-  },
-  bitkubbot: {
-    name: "Bitkub Bot",
-    enabled: true,
-    manifest: "firmware-bitkubbot/manifest.json",
-    prefix: "firmware-bitkubbot/",
-  },
-  motogauge: {
-    name: "เกจมอเตอร์ไซค์",
-    enabled: true,
-    manifest: "firmware-motogauge/manifest.json",
-    prefix: "firmware-motogauge/",
-  },
-};
+// รายชื่อโปรแกรมที่เฟลชได้ อ่านจากไฟล์ projects.json ใน repo เฟิร์มแวร์ (ไม่ต้องแก้ worker อีกเมื่อเพิ่ม/แก้โปรเจ็ค)
+// รูปแบบไฟล์:
+//   { "gulftide": { "name": "ตารางน้ำขึ้น/น้ำลง", "enabled": true },
+//     "dashtron": { "name": "DashTron", "enabled": true, "dir": "firmware-installer" } }
+//   name    : ชื่อที่แสดง
+//   enabled : true = เปิดให้ซื้อ/เฟลช  false = ยังไม่พร้อม
+//   dir     : (ไม่บังคับ) โฟลเดอร์ใน repo ถ้าไม่ใส่ใช้ "firmware-<id>"
+// manifest อยู่ที่ <dir>/manifest.json และ path ของแต่ละไฟล์ต้องมี "/<ILI9341|ST7789>/" เหมือนเดิม
+const PROJECTS_FILE = "projects.json";
+const CACHE_MS = 60 * 1000;
+let projCache = { t: 0, data: null };
+
+async function loadProjects(env) {
+  if (projCache.data && Date.now() - projCache.t < CACHE_MS) return projCache.data;
+  try {
+    const r = await fetchFirmware(env, PROJECTS_FILE);
+    if (!r.ok) throw new Error("projects.json " + r.status);
+    const raw = await r.json();
+    const out = {};
+    for (const [id, p] of Object.entries(raw || {})) {
+      if (!/^[a-z0-9_-]{1,40}$/.test(id) || !p || typeof p !== "object") continue;
+      const dir = String(p.dir || "firmware-" + id).replace(/^\/+|\/+$/g, "");
+      if (!/^[A-Za-z0-9_-]+$/.test(dir)) continue;   // กัน path แปลกๆ
+      out[id] = { name: String(p.name || id), enabled: p.enabled !== false, manifest: dir + "/manifest.json", prefix: dir + "/" };
+    }
+    projCache = { t: Date.now(), data: out };
+    return out;
+  } catch (e) {
+    if (projCache.data) return projCache.data;   // ใช้ค่าเก่าถ้าดึงใหม่ไม่ได้
+    throw e;
+  }
+}
 
 function cors(env) {
   return {
@@ -94,7 +89,7 @@ async function getPaidSelection(env, sessionId) {
   if (!s || s.payment_status !== "paid") return null;
   const project = s.metadata?.project;
   const board = s.metadata?.board;
-  if (!PROJECTS[project] || !BOARDS.includes(board)) return null;
+  if (!(await loadProjects(env))[project] || !BOARDS.includes(board)) return null;
   return { project, board };
 }
 
@@ -111,7 +106,8 @@ function collectParts(node, out = []) {
 // ดึงรายการไฟล์เฟิร์มแวร์ของโปรเจ็ค + ชิปจอ จาก manifest ใน repo
 // คืนค่า { parts } หรือ { error, status }
 async function loadParts(env, project, board) {
-  const proj = PROJECTS[project];
+  const proj = (await loadProjects(env))[project];
+  if (!proj) return { error: "unknown project", status: 404 };
   const mf = await fetchFirmware(env, proj.manifest);
   if (!mf.ok) return { error: "manifest not found", status: 502 };
   let data;
@@ -129,10 +125,17 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: cors(env) });
 
     try {
+      // 0) รายชื่อโปรแกรมที่เปิดอยู่ (หน้าเว็บใช้สร้างตัวเลือก)
+      if (url.pathname === "/projects") {
+        const P = await loadProjects(env);
+        return json(env, { projects: Object.entries(P).filter(([, p]) => p.enabled).map(([id, p]) => ({ id, name: p.name })) });
+      }
+
       // 1) Create Checkout Session (199 THB) — ล็อกโปรแกรม + ชิปจอ ไว้ใน metadata
       if (url.pathname === "/checkout" && request.method === "POST") {
         const { project, board } = await request.json().catch(() => ({}));
-        if (!PROJECTS[project] || !PROJECTS[project].enabled) return json(env, { error: "โปรแกรมนี้ยังไม่เปิดให้ติดตั้ง" }, 400);
+        const P = await loadProjects(env);
+        if (!P[project] || !P[project].enabled) return json(env, { error: "โปรแกรมนี้ยังไม่เปิดให้ติดตั้ง" }, 400);
         if (!BOARDS.includes(board)) return json(env, { error: "bad board" }, 400);
 
         // กันเก็บเงินโดยไม่มีของส่ง: ต้องมีไฟล์เฟิร์มแวร์ของโปรแกรม+ชิปจอนี้พร้อมก่อน
@@ -145,7 +148,7 @@ export default {
           mode: "payment",
           "line_items[0][price_data][currency]": "thb",
           "line_items[0][price_data][unit_amount]": PRICE_SATANG,
-          "line_items[0][price_data][product_data][name]": `Flash Tool - ${PROJECTS[project].name} (${board})`,
+          "line_items[0][price_data][product_data][name]": `Flash Tool - ${P[project].name} (${board})`,
           "line_items[0][quantity]": "1",
           "payment_method_types[0]": "card",
           "payment_method_types[1]": "promptpay",
@@ -178,7 +181,7 @@ export default {
       if (url.pathname === "/firmware") {
         const sel = await getPaidSelection(env, url.searchParams.get("session_id"));
         if (!sel) return json(env, { error: "not paid" }, 402);
-        const proj = PROJECTS[sel.project];
+        const proj = (await loadProjects(env))[sel.project];
 
         const path = url.searchParams.get("path") || "";
         const ok =
